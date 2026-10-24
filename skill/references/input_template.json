@@ -1,0 +1,46 @@
+{
+  "company": "شرکت نمونه (همه مبالغ به میلیون ریال)",
+  "is_loss_making": false,
+  "has_monthly_reports": true,
+  "price": null,
+  "shares_outstanding": null,
+  "market_cap": 60000,
+  "months_elapsed": 7,
+  "ytd_net_income_fis": 8500,
+  "ytd_sales": 42000,
+  "forward_net_income": null,
+  "forward_sales": null,
+  "ttm_net_income": 13000,
+  "sales_period_current": 42000,
+  "sales_period_prior_year": 30000,
+  "quarters": {
+    "current": {
+      "revenue": 18500,
+      "fis_profit": 3900
+    },
+    "previous": {
+      "revenue": 16800,
+      "fis_profit": 3300
+    }
+  },
+  "dividends": {
+    "last_year": {
+      "dividend": 6000,
+      "retained_earnings": 11000
+    },
+    "this_year": {
+      "dividend": 7500,
+      "retained_earnings": 14500
+    }
+  },
+  "balance_sheet": {
+    "receivables": 11000,
+    "total_assets": 70000,
+    "average_inventory": 9000
+  },
+  "period_days": 365,
+  "period_sales": 62000,
+  "period_cogs": 45000,
+  "risk_free_rate": 40,
+  "precomputed": {}
+}

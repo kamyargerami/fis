@@ -1,0 +1,38 @@
+services:
+  fis-bot:
+    build:
+      context: .
+      # "host" lets pip use a BUILD_PROXY that listens on the host's 127.0.0.1
+      network: ${NETWORK_MODE:-bridge}
+      args:
+        HTTP_PROXY: ${BUILD_PROXY:-}
+        HTTPS_PROXY: ${BUILD_PROXY:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: fis-codal-bot:latest
+    container_name: fis-codal-bot
+    restart: unless-stopped
+    # "host" lets the container use a proxy that listens on the host's 127.0.0.1
+    network_mode: ${NETWORK_MODE:-bridge}
+    env_file: .env
+    environment:
+      TZ: Asia/Tehran
+      DATA_DIR: /data
+      FIS_CACHE: /data/cache/http
+    # runs as the owner of ./data on the host (see README)
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
