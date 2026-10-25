@@ -203,10 +203,14 @@ def read_ranking(path):
         return {}, {}
     wb = load_workbook(path, read_only=True)
     fis, hold = {}, {}
-    for r in list(wb.worksheets[0].iter_rows(min_row=2, values_only=True)):
+    rows = list(wb.worksheets[0].iter_rows(values_only=True))
+    col = {h: i for i, h in reversed(list(enumerate(rows[0] if rows else [])))}  # first column per header
+    get = lambda r, h: r[col[h]] if h in col else None  # noqa: E731
+    for r in rows[1:]:
         if r[1]:
             fis[norm(r[1])] = {"symbol": r[1], "rank": r[0], "score": r[3], "raw": r[4],
-                               "above_avg": r[6], "pe_status": r[7], "fwd_pe": r[13]}
+                               "above_avg": r[6], "pe_status": r[7], "fwd_pe": get(r, "P/E آینده‌نگر"),
+                               "fwd_pd": get(r, "P/D آینده‌نگر")}
     if len(wb.worksheets) > 1:
         for r in list(wb.worksheets[1].iter_rows(min_row=2, values_only=True)):
             if r[1]:

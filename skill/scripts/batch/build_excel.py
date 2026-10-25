@@ -134,7 +134,10 @@ for s, r in raw.items():
         excluded.append((s, r.get("name"), "زیان‌ده (سود ۱۲ ماه گذشته ≤ صفر) — طبق مقاله حذف", r.get("report_url")))
         continue
     vals = {x["key"]: x for x in o["rows"]}
-    rows.append({"r": r, "o": o, "mcap": mcap, "vals": vals,
+    # P/D = forward P/E / payout ratio (forward dividend = forward earnings x the payout variable)
+    pe, payout = vals["forward_pe"]["value"], vals["dividend_payout"]["value"]
+    pd_fwd = pe / (payout / 100) if isinstance(pe, (int, float)) and pe > 0 and payout else None
+    rows.append({"r": r, "o": o, "mcap": mcap, "vals": vals, "pd_fwd": pd_fwd,
                  "pe_ttm": (mcap / r["ttm_net"]) if mcap and r.get("ttm_net") else None})
 
 avg = sum(x["o"]["normalized_100"] for x in rows) / len(rows) if rows else 0
@@ -160,7 +163,7 @@ ws = wb.active
 ws.title = "رتبه‌بندی FIS"
 cols = ["رتبه", "نماد", "نام شرکت", "نمره FIS (نرمال‌شده از ۱۰۰)", "امتیاز خام", "حداکثر قابل‌محاسبه",
         "بالاتر از میانگین گروه؟", "وضعیت P/E (اخزا ۴۰٪)", "قیمت (ریال)", "ارزش بازار (میلیارد تومان)",
-        "آخرین گزارش", "ماه‌های دوره", "P/E TTM"]
+        "آخرین گزارش", "ماه‌های دوره", "P/E TTM", "P/D آینده‌نگر"]
 for k in ORDER:
     cols += [THRESHOLDS[k]["label"], f"امتیاز ({THRESHOLDS[k]['max']})"]
 cols += ["زیرمجموعه هلدینگ (درصد مالکیت)", "منبع نماد", "متغیرهای فاقد داده", "یادداشت", "لینک کدال"]
@@ -170,7 +173,7 @@ for i, x in enumerate(rows, 1):
     line = [i, r["symbol"], r.get("name"), o["normalized_100"], o["total"], o["max_available"],
             "بله" if o["normalized_100"] > avg else "خیر", o.get("pe_signal", "—"), r.get("price"),
             round(x["mcap"] / 1e4, 1) if x["mcap"] else None, r.get("report"), r.get("months"),
-            round(x["pe_ttm"], 2) if x["pe_ttm"] else None]
+            round(x["pe_ttm"], 2) if x["pe_ttm"] else None, round(x["pd_fwd"], 2) if x["pd_fwd"] else None]
     for k in ORDER:
         v = x["vals"][k]
         val = round(v["value"], 2) if isinstance(v["value"], (int, float)) else v["value"]
@@ -283,6 +286,7 @@ notes = [
     "تطبیق با برآورد کارشناس: تکیمیا در ۱۳ مهر ۱۴۰۵ — P/E فوروارد 2.99 و P/S فوروارد 2.05 دقیقاً بازتولید شد.",
     "حاشیه سود = سود FIS ÷ درآمد عملیاتی دوره تجمعی؛ رشد روند حاشیه = حاشیه فصل آخر نسبت به فصل قبل.",
     "نسبت تقسیم سود = میانگین (سود سهام مصوب ÷ سود انباشته ابتدای همان سال) برای دو سال؛ اگر مجمع امسال هنوز برگزار نشده، فقط سال قبل.",
+    "P/D آینده‌نگر = P/E آینده‌نگر ÷ نسبت تقسیم سود (یعنی ارزش بازار ÷ سود آینده‌نگر × نسبت تقسیم)؛ برای شرکت بدون تقسیم سود یا سود آینده‌نگر منفی خالی است. هرچه کمتر، بهتر.",
     "حذف: صندوق‌ها و شرکت‌های زیان‌ده (سود خالص ۱۲ ماه گذشته ≤ صفر) طبق مقاله امتیازدهی نمی‌شوند.",
     "نمره نرمال‌شده = امتیاز خام ÷ حداکثر امتیاز متغیرهای قابل‌محاسبه × ۱۰۰ (برای بانک/هلدینگ که بعضی متغیرها معنا ندارند). رتبه‌بندی بر اساس همین ستون است.",
     f"میانگین نمره نرمال‌شده گروه: {avg:.1f} — قاعده مقاله: انتخاب از میان شرکت‌های بالاتر از میانگین.",

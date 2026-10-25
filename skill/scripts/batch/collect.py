@@ -366,7 +366,12 @@ def _monthly_from_excel(ser, pe):
     return cur, prev, used, pe, None, "گزارش فعالیت ماهانه (excel)"
 
 
-def monthly_revenue(symbol):
+def published_by(letter, as_of):
+    """True if the letter was published on or before as_of (Jalali 'YYYY/MM/DD'); always True without as_of."""
+    return not as_of or str(letter.get("PublishDateTime", "")).translate(FA_DIG)[:10] <= as_of
+
+
+def monthly_revenue(symbol, as_of=None):
     """Cumulative revenue to date (and same period last year) from the latest ن-۳۰ monthly report.
 
     Columns are found by header text, not position: the cumulative-to-date group contains the
@@ -375,7 +380,8 @@ def monthly_revenue(symbol):
     of that group in the table's «جمع»/«جمع کل» row. Source order: cached codal.ir page ->
     Excel export -> live codal.ir page.
     """
-    letters = [l for l in codal_letters(symbol, letter_type=58) if l.get("HasHtml") or l.get("HasExcel")]
+    letters = [l for l in codal_letters(symbol, letter_type=58)
+               if (l.get("HasHtml") or l.get("HasExcel")) and published_by(l, as_of)]
     if not letters:
         return None
     latest = max(letters, key=lambda l: parse_title(l["Title"])[1] or "")
@@ -405,8 +411,13 @@ def monthly_revenue(symbol):
 
 
 # ---------------------------------------------------------------- main
-def collect(symbol):
+def collect(symbol, as_of=None):
+    """FIS inputs for a symbol. as_of (Jalali 'YYYY/MM/DD') uses only letters published by that day,
+    to rebuild what was known on a past date (e.g. to compare with an analyst's post from that day).
+    Price and share count are always today's."""
     out = {"symbol": symbol, "notes": []}
+    if as_of:
+        out["as_of"] = as_of
     m = tsetmc(symbol)
     if not m:
         out["error"] = "نماد در TSETMC پیدا نشد"
@@ -414,9 +425,9 @@ def collect(symbol):
     out.update({"name": m["name"], "price": m["price"], "shares": m["shares"], "sector": m["sector"]})
     letters, variant = [], symbol
     for variant in dict.fromkeys([symbol, symbol.replace(" ", "‌")]):
-        letters = [l for l in codal_letters(variant) if usable(l)]
+        letters = [l for l in codal_letters(variant) if usable(l) and published_by(l, as_of)]
         if not letters:
-            letters = [l for l in codal_letters(variant, pages=2) if usable(l)]
+            letters = [l for l in codal_letters(variant, pages=2) if usable(l) and published_by(l, as_of)]
         if letters:
             break
     if not letters:
@@ -548,7 +559,7 @@ def collect(symbol):
 
     # monthly activity report (ن-۳۰): the paper's source for forward sales/earnings
     try:
-        mr = monthly_revenue(variant)
+        mr = monthly_revenue(variant, as_of)
         if mr and not mr.get("m_months"):
             mr["m_months"] = months_elapsed(mr["m_period_end"], yend)
     except Exception as e:  # noqa: BLE001
