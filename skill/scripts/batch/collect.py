@@ -216,6 +216,7 @@ def income(rows):
         "tax_cur": find(rows, "سال جاری", "هزینه مالیات بر درآمد"),
         "tax_prev": find(rows, "سال‌های قبل"),
         "net": find(rows, "سود (زیان) خالص", last=True),
+        "bio": find(rows, "سود (زیان) فروش دارایی زیستی مولد"),
     }
 
 
@@ -227,6 +228,24 @@ def fis_profit(inc, p):
     fin = abs(inc["fin"].get(p) or 0)
     tax = abs(inc["tax_cur"].get(p) or 0)
     return op + imp - fin - tax
+
+
+NONOP_RULE = 2  # version of nonop_income(); backfill_nonop.py recomputes results saved with an older one
+
+
+def nonop_income(inc, p):
+    """Pre-tax non-operating income of period p: pre-tax profit - operating profit + finance costs,
+    without gains on selling productive biological assets (livestock): for farms these recur every
+    year, and the analyst channel the user follows keeps them too.
+
+    Pre-tax profit is rebuilt as net + taxes, so it works whatever the pre-tax row is called.
+    None when operating profit or net income is missing (banks, insurers)."""
+    op, net = inc["op"].get(p), inc["net"].get(p)
+    if op is None or net is None:
+        return None
+    tax = abs(inc["tax_cur"].get(p) or 0) + abs(inc["tax_prev"].get(p) or 0)
+    bio = (inc.get("bio") or {}).get(p) or 0
+    return net + tax - op + abs(inc["fin"].get(p) or 0) - bio
 
 
 def equity_dividends(grid):
@@ -479,7 +498,8 @@ def collect(symbol, as_of=None):
 
     rev, net = inc["rev"].get(end), inc["net"].get(end)
     fis = fis_profit(inc, end)
-    out.update(rev=rev, net=net, fis=fis, cogs=abs(inc["cogs"].get(end) or 0) or None)
+    out.update(rev=rev, net=net, fis=fis, cogs=abs(inc["cogs"].get(end) or 0) or None,
+               nonop=nonop_income(inc, end), nonop_rule=NONOP_RULE)
     if rev is None or inc["op"].get(end) is None:
         out["notes"].append("ساختار صورت سود و زیان غیراستاندارد (بانک/بیمه/…) — درآمد یا سود عملیاتی پیدا نشد")
     out["rev_prev_same"] = inc["rev"].get(prev_same) if prev_same else None
@@ -574,16 +594,25 @@ def collect(symbol, as_of=None):
     return out
 
 
+def core_margin(r):
+    """Net margin without non-operating gains (conservative: one-off gains such as asset sales,
+    deposit interest or FX revaluation are not assumed to repeat; non-operating losses are kept)."""
+    if not r.get("rev") or r["rev"] <= 0 or r.get("net") is None:
+        return r.get("net_margin")
+    return (r["net"] - max(r.get("nonop") or 0, 0)) / r["rev"]
+
+
 def forward_net(r):
     """Forward (current fiscal year) net income, same rule as the FIS sheet.
 
-    Monthly report available: monthly cumulative sales / months x 12 x net margin (holdings: prior-FY
-    margin, because interim dividend income is seasonal). Otherwise interim FIS profit x 12 / months.
+    Monthly report available: monthly cumulative sales / months x 12 x net margin without non-operating
+    gains (holdings: prior-FY margin, because interim dividend income is seasonal). Otherwise interim
+    FIS profit x 12 / months.
     """
     fmt = (r.get("format") or "").replace("‌", " ")
     if r.get("m_cum_rev") and r.get("m_months"):
         fwd_sales = r["m_cum_rev"] * 12 / r["m_months"]
-        margin = r.get("net_margin")
+        margin = core_margin(r)
         if "سرمایه گذاری" in fmt and r.get("fy_rev") and r["fy_rev"] > 0 and r.get("fy_net") is not None:
             margin = r["fy_net"] / r["fy_rev"]
         if margin is not None:

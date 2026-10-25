@@ -14,6 +14,8 @@ WORK = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.getcwd()
 if len(sys.argv) > 3:
     sys.path.insert(0, os.path.abspath(sys.argv[3]))
 sys.path.insert(0, os.path.join(HERE, ".."))
+sys.path.insert(0, HERE)
+from collect import forward_net  # noqa: E402
 from fis_score import ORDER, THRESHOLDS, evaluate  # noqa: E402
 from openpyxl import Workbook  # noqa: E402
 from openpyxl.formatting.rule import ColorScaleRule  # noqa: E402
@@ -60,17 +62,14 @@ def to_input(r):
         },
     }
     # Paper: forward sales/earnings from monthly reports (avg monthly x 12). Monthly reports give
-    # sales only, so forward earnings = forward sales x net margin of the latest interim statement.
+    # sales only, so forward earnings = forward sales x net margin of the latest interim statement,
+    # without non-operating gains (collect.forward_net).
     if r.get("m_cum_rev") and r.get("m_months"):
-        fwd_sales = r["m_cum_rev"] * 12 / r["m_months"]
+        fwd_net, fwd_sales = forward_net(r)
         d["forward_sales"] = fwd_sales
         d["months_elapsed"] = r["m_months"]
-        margin = r.get("net_margin")
-        fmt = (r.get("format") or "").replace("\u200c", " ")
-        if "سرمایه گذاری" in fmt and r.get("fy_rev") and r["fy_rev"] > 0 and r.get("fy_net") is not None:
-            margin = r["fy_net"] / r["fy_rev"]  # holdings: interim margin is distorted by seasonal dividends
-        if margin is not None:
-            d["forward_net_income"] = fwd_sales * margin
+        if fwd_net is not None:
+            d["forward_net_income"] = fwd_net
         elif r.get("fis") is not None and r.get("months"):
             d["forward_net_income"] = r["fis"] * 12 / r["months"]
         if r.get("m_prev_rev") and r["m_prev_rev"] > 0:
@@ -140,8 +139,14 @@ for s, r in raw.items():
     rows.append({"r": r, "o": o, "mcap": mcap, "vals": vals, "pd_fwd": pd_fwd,
                  "pe_ttm": (mcap / r["ttm_net"]) if mcap and r.get("ttm_net") else None})
 
+# a normalized score from few computable variables (banks, insurers, funds-like companies) is not
+# comparable with the rest: those go to the «سایر شرکت‌ها» sheet, outside the ranking and the average
+MIN_MAX_AVAILABLE = 70
+others = [x for x in rows if x["o"]["max_available"] < MIN_MAX_AVAILABLE]
+rows = [x for x in rows if x["o"]["max_available"] >= MIN_MAX_AVAILABLE]
 avg = sum(x["o"]["normalized_100"] for x in rows) / len(rows) if rows else 0
 rows.sort(key=lambda x: (-x["o"]["normalized_100"], -x["o"]["total"]))
+others.sort(key=lambda x: (-x["o"]["normalized_100"], -x["o"]["total"]))
 
 wb = Workbook()
 HFILL = PatternFill("solid", fgColor="1F4E78")
@@ -163,17 +168,23 @@ ws = wb.active
 ws.title = "رتبه‌بندی FIS"
 cols = ["رتبه", "نماد", "نام شرکت", "نمره FIS (نرمال‌شده از ۱۰۰)", "امتیاز خام", "حداکثر قابل‌محاسبه",
         "بالاتر از میانگین گروه؟", "وضعیت P/E (اخزا ۴۰٪)", "قیمت (ریال)", "ارزش بازار (میلیارد تومان)",
-        "آخرین گزارش", "ماه‌های دوره", "P/E TTM", "P/D آینده‌نگر"]
+        "آخرین گزارش", "ماه‌های دوره", "P/E TTM", "P/D آینده‌نگر",
+        "سود غیرعملیاتی دوره (میلیارد تومان)", "سهم سود غیرعملیاتی از سود خالص (%)"]
 for k in ORDER:
     cols += [THRESHOLDS[k]["label"], f"امتیاز ({THRESHOLDS[k]['max']})"]
 cols += ["زیرمجموعه هلدینگ (درصد مالکیت)", "منبع نماد", "متغیرهای فاقد داده", "یادداشت", "لینک کدال"]
-header(ws, cols, {2: 11, 3: 26, 8: 22, 11: 34, len(cols) - 2: 40, len(cols) - 1: 40, len(cols): 30})
-for i, x in enumerate(rows, 1):
+WIDTHS = {2: 11, 3: 26, 8: 22, 11: 34, len(cols) - 2: 40, len(cols) - 1: 40, len(cols): 30}
+
+
+def fis_line(x, rank):
     r, o = x["r"], x["o"]
-    line = [i, r["symbol"], r.get("name"), o["normalized_100"], o["total"], o["max_available"],
-            "بله" if o["normalized_100"] > avg else "خیر", o.get("pe_signal", "—"), r.get("price"),
+    above = ("بله" if o["normalized_100"] > avg else "خیر") if rank != "—" else "—"
+    line = [rank, r["symbol"], r.get("name"), o["normalized_100"], o["total"], o["max_available"],
+            above, o.get("pe_signal", "—"), r.get("price"),
             round(x["mcap"] / 1e4, 1) if x["mcap"] else None, r.get("report"), r.get("months"),
-            round(x["pe_ttm"], 2) if x["pe_ttm"] else None, round(x["pd_fwd"], 2) if x["pd_fwd"] else None]
+            round(x["pe_ttm"], 2) if x["pe_ttm"] else None, round(x["pd_fwd"], 2) if x["pd_fwd"] else None,
+            round(r["nonop"] / 1e4, 1) if r.get("nonop") is not None else None,
+            round(r["nonop"] / r["net"] * 100, 1) if r.get("nonop") is not None and r.get("net") else None]
     for k in ORDER:
         v = x["vals"][k]
         val = round(v["value"], 2) if isinstance(v["value"], (int, float)) else v["value"]
@@ -183,16 +194,26 @@ for i, x in enumerate(rows, 1):
     extra = []
     line += ["، ".join(parents.get(_n(r["symbol"]), [])), "زیرمجموعه هلدینگ" if r.get("_from_holding") else "فهرست شما",
              "، ".join(o["missing"]), " / ".join(extra + r.get("notes", []) + o.get("notes", [])), r.get("report_url")]
-    ws.append(line)
-n = len(rows) + 1
-ws.conditional_formatting.add(f"D2:D{n}", ColorScaleRule(start_type="min", start_color="F8696B",
-                                                          mid_type="percentile", mid_value=50, mid_color="FFEB84",
-                                                          end_type="max", end_color="63BE7B"))
-for row in ws.iter_rows(min_row=2):
-    for c in row:
-        c.alignment = Alignment(horizontal="center", vertical="center")
-    row[-1].hyperlink = row[-1].value
-    row[-1].style = "Hyperlink"
+    return line
+
+
+def fis_sheet(ws, items, ranked):
+    header(ws, cols, WIDTHS)
+    for i, x in enumerate(items, 1):
+        ws.append(fis_line(x, i if ranked else "—"))
+    n = len(items) + 1
+    ws.conditional_formatting.add(f"D2:D{n}", ColorScaleRule(start_type="min", start_color="F8696B",
+                                                              mid_type="percentile", mid_value=50, mid_color="FFEB84",
+                                                              end_type="max", end_color="63BE7B"))
+    for row in ws.iter_rows(min_row=2):
+        for c in row:
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        row[-1].hyperlink = row[-1].value
+        row[-1].style = "Hyperlink"
+
+
+fis_sheet(ws, rows, ranked=True)
+fis_sheet(wb.create_sheet("سایر شرکت‌ها"), others, ranked=False)  # ends up after the holdings sheets
 
 # ---------------------------------------------------------------- tab 2: holdings
 hpath = os.path.join(WORK, "holdings.json")
@@ -281,7 +302,8 @@ notes = [
     "داده‌ها: آخرین صورت مالی ن-۱۰ (غیرتلفیقی) هر نماد از کدال + قیمت پایانی و تعداد سهام از TSETMC در تاریخ اجرا.",
     "سود FIS = سود عملیاتی + هزینه استثنایی کاهش ارزش دریافتنی‌ها − هزینه مالی − مالیات سال جاری (حذف اقلام غیرعملیاتی و مالیات سال‌های قبل).",
     "فروش آینده‌نگر (طبق مقاله) = فروش تجمعی آخرین گزارش فعالیت ماهانه (ن-۳۰) ÷ تعداد ماه‌ها × ۱۲.",
-    "سود آینده‌نگر = فروش آینده‌نگر × حاشیه سود خالص آخرین صورت میان‌دوره‌ای (برای هلدینگ‌ها: حاشیه سال مالی قبل). بدون گزارش ماهانه: سود FIS میان‌دوره‌ای × ۱۲ ÷ ماه‌ها.",
+    "سود آینده‌نگر = فروش آینده‌نگر × حاشیه سود خالص آخرین صورت میان‌دوره‌ای بدون سود غیرعملیاتی (برای هلدینگ‌ها: حاشیه سال مالی قبل). بدون گزارش ماهانه: سود FIS میان‌دوره‌ای × ۱۲ ÷ ماه‌ها.",
+    "سود غیرعملیاتی = سود قبل از مالیات (سود خالص + مالیات) − سود عملیاتی + هزینه مالی، از همان صورت مالی. محافظه‌کارانه: سودهای غیرعملیاتی و یک‌باره (فروش دارایی، سود سپرده، تسعیر ارز و …) تکرارشونده فرض نمی‌شوند و از سود آینده‌نگر کم می‌شوند (قبل از مالیات)؛ زیان غیرعملیاتی کم نمی‌شود. سود فروش دارایی زیستی مولد (دام) در شرکت‌های کشاورزی تکرارشونده است و کم نمی‌شود.",
     "رشد فروش تجمعی و «سال مالی» (ماه‌های پوشش) از گزارش ماهانه؛ اگر ستون دوره مشابه سال قبل نداشت، از صورت میان‌دوره‌ای.",
     "تطبیق با برآورد کارشناس: تکیمیا در ۱۳ مهر ۱۴۰۵ — P/E فوروارد 2.99 و P/S فوروارد 2.05 دقیقاً بازتولید شد.",
     "حاشیه سود = سود FIS ÷ درآمد عملیاتی دوره تجمعی؛ رشد روند حاشیه = حاشیه فصل آخر نسبت به فصل قبل.",
@@ -289,6 +311,7 @@ notes = [
     "P/D آینده‌نگر = P/E آینده‌نگر ÷ نسبت تقسیم سود (یعنی ارزش بازار ÷ سود آینده‌نگر × نسبت تقسیم)؛ برای شرکت بدون تقسیم سود یا سود آینده‌نگر منفی خالی است. هرچه کمتر، بهتر.",
     "حذف: صندوق‌ها و شرکت‌های زیان‌ده (سود خالص ۱۲ ماه گذشته ≤ صفر) طبق مقاله امتیازدهی نمی‌شوند.",
     "نمره نرمال‌شده = امتیاز خام ÷ حداکثر امتیاز متغیرهای قابل‌محاسبه × ۱۰۰ (برای بانک/هلدینگ که بعضی متغیرها معنا ندارند). رتبه‌بندی بر اساس همین ستون است.",
+    f"شرکت‌هایی که «حداکثر قابل‌محاسبه»شان کمتر از {MIN_MAX_AVAILABLE} است (بانک، بیمه و شرکت‌هایی که بخش بزرگی از متغیرها برایشان حساب نمی‌شود) در رتبه‌بندی و میانگین نیستند و در برگه «سایر شرکت‌ها» آمده‌اند.",
     f"میانگین نمره نرمال‌شده گروه: {avg:.1f} — قاعده مقاله: انتخاب از میان شرکت‌های بالاتر از میانگین.",
     "محدوده P/E خرید = ۱÷اخزا + ۱ تا ۱.۵ (با اخزا ۴۰٪: ۳.۵ تا ۴)، خروج حدود ۷ تا ۸.",
     "آستانه‌های امتیاز هر متغیر در مقاله منتشر نشده و کالیبراسیون skill برای بورس تهران است.",
@@ -305,6 +328,6 @@ for t in notes:
     ws4.cell(ws4.max_row, 1).alignment = Alignment(wrap_text=True, horizontal="right")
 
 wb.save(OUT)
-print(f"saved {OUT}: ranked={len(rows)} excluded={len(excluded)} avg={avg:.1f}")
+print(f"saved {OUT}: ranked={len(rows)} excluded={len(excluded)} avg={avg:.1f} others={len(others)}")
 for i, x in enumerate(rows[:15], 1):
     print(i, x["r"]["symbol"], x["o"]["normalized_100"], x["o"]["total"], x["o"]["max_available"], x["o"].get("pe_signal"))
