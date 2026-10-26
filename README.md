@@ -41,14 +41,6 @@ docker compose exec fis-bot python -m app.pipeline --dry-run   # بدون Claude
 | `output/` | اکسل هر روز و `FIS_ranking_latest.xlsx` |
 | `state.json` | آخرین اجرای موفق و گزارش‌های دیده‌شده |
 
-## به‌روزرسانی skill
-
-پوشه `skill/` کپی skill است. بعد از تغییر skill:
-
-```bash
-rm -rf skill && cp -r ~/.claude/skills/fis-stock-scoring skill && docker compose up -d --build
-```
-
 ## امنیت
 
 - کانتینر با کاربر غیر root، فایل‌سیستم فقط‌خواندنی، بدون capability، با `no-new-privileges` و محدودیت حافظه و پردازه اجرا می‌شود و هیچ پورتی باز نمی‌کند.
