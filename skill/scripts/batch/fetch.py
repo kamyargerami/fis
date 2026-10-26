@@ -65,6 +65,8 @@ def get(url, delay=1.5, ttl="auto", attempts=4):
     offline = os.environ.get("FIS_OFFLINE") == "1"  # same-day re-runs: use any cached copy
     if os.path.exists(path) and (offline or ttl is FOREVER or time.time() - os.path.getmtime(path) < ttl):
         return open(path, encoding="utf-8").read()
+    if os.environ.get("FIS_CACHE_ONLY") == "1" and "tsetmc" not in url:  # recompute.py: never ask Codal
+        raise RuntimeError(f"not in cache: {url}")
     if TRANSIENT:  # already throttled in this process: fail fast, the caller stops soon
         attempts = 1
     last = None
@@ -191,15 +193,16 @@ def match_instrument(name, total_shares=None, mw=None):
 
 
 # ---------------------------------------------------------------- Codal
-def codal_letters(symbol, pages=1, letter_type=6):
-    """letter_type 6 = financial statements (ن-۱۰), 58 = monthly activity (ن-۳۰)."""
+def codal_letters(symbol, pages=1, letter_type=6, from_date=""):
+    """letter_type 6 = financial statements (ن-۱۰), 58 = monthly activity (ن-۳۰), -1 = all letters.
+    from_date: Jalali 'YYYY/MM/DD' (published on or after), '' = no limit."""
     q = urllib.parse.quote(symbol)
     out = []
     for p in range(1, pages + 1):
         url = ("https://search.codal.ir/api/search/v2/q?Symbol=" + q +
                f"&LetterType={letter_type}&Audited=true&NotAudited=true&Consolidatable=true&NotConsolidatable=true"
                "&Childs=false&Mains=true&Publisher=false&Category=-1&CompanyType=-1&Length=-1&search=true"
-               "&Isic=&AuditorRef=-1&CompanyState=-1&FromDate=&ToDate=&ReportingType=-1&TracingNo=-1"
+               f"&Isic=&AuditorRef=-1&CompanyState=-1&FromDate={from_date}&ToDate=&ReportingType=-1&TracingNo=-1"
                f"&isNotAudited=false&PageNumber={p}")
         d = json.loads(get(url, delay=12))
         out += d.get("Letters", [])

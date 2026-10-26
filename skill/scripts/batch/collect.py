@@ -5,6 +5,7 @@ cache, otherwise the Excel export (excel.codal.ir) — one request for all sheet
 affected by codal.ir's «تأیید کاربر» bot-check. Both paths produce the same row format.
 """
 import collections
+import html as htmllib
 import re
 import urllib.parse
 
@@ -217,6 +218,7 @@ def income(rows):
         "tax_prev": find(rows, "سال‌های قبل"),
         "net": find(rows, "سود (زیان) خالص", last=True),
         "bio": find(rows, "سود (زیان) فروش دارایی زیستی مولد"),
+        "other_inc": find(rows, "سایر درآمدها", "سایر درآمدهای عملیاتی"),
     }
 
 
@@ -230,7 +232,67 @@ def fis_profit(inc, p):
     return op + imp - fin - tax
 
 
-NONOP_RULE = 2  # version of nonop_income(); backfill_nonop.py recomputes results saved with an older one
+NONOP_RULE = 2  # version of nonop_income()
+METHOD = 4  # version of collect()'s output; recompute.py re-derives older results from the HTTP cache
+CAPITAL_INCREASE_CODES = ("ن-۵۷", "ن-۷۳")  # extraordinary general meeting / board decisions on a capital increase
+
+
+def _increase_rows(page):
+    """Numeric rows of the «محل تأمین افزایش سرمایه» table of a ن-۵۷ / ن-۷۳ notice. Columns: shares,
+    par, last registered capital, receivables & cash contribution, retained earnings, reserves,
+    revaluation surplus, share premium, cash without pre-emption rights, total increase, percent, …
+    (amounts in million rials; values sit in input fields or plain cells)."""
+    i = page.find("محل تأمین")
+    if i < 0:
+        return []
+    table = page[page.rfind("<table", 0, i):page.find("</table>", i)]
+    rows = []
+    for tr in re.findall(r"<tr.*?</tr>", table, re.S):
+        cells = []
+        for td in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S):
+            v = re.findall(r'value="([^"]*)"', td)
+            cells.append(fa_num(htmllib.unescape(v[0] if v else re.sub(r"<[^>]+>", "", td))))
+        if len(cells) >= 11 and sum(c is not None for c in cells) >= 8:
+            rows.append(cells)
+    return rows
+
+
+def capital_increase(symbol, capital_report, shares_now, since, as_of=None):
+    """Sources of the capital increase registered after the latest report: the ن-۵۷ / ن-۷۳ notice whose
+    last capital is the report's capital and whose new capital is today's (million rials). None if not found."""
+    target = shares_now * 1000 / 1e6  # par 1000 rials
+    letters = [l for l in codal_letters(symbol, pages=4, letter_type=-1, from_date=since)
+               if l.get("LetterCode") in CAPITAL_INCREASE_CODES and published_by(l, as_of)]
+    for l in letters:  # newest first
+        for c in _increase_rows(get("https://codal.ir" + l["Url"], delay=4)):
+            last, total = c[2], c[9]
+            if last and total and abs(last / capital_report - 1) < 0.02 and abs((last + total) / target - 1) < 0.02:
+                z = lambda x: x or 0  # noqa: E731
+                return {"cash": z(c[3]) + z(c[8]), "retained": z(c[4]), "reserve": z(c[5]),
+                        "revaluation": z(c[6]), "premium": z(c[7]), "total": total,
+                        "letter": " ".join(l["Title"].split()), "published": str(l.get("PublishDateTime", ""))[:10].translate(FA_DIG),
+                        "url": "https://codal.ir" + l["Url"]}
+    return None
+
+
+def gains_of(inc, p):
+    """Gains that are not assumed to repeat: other operating income + non-operating income (each only
+    if positive; expenses are always kept). Livestock sales are excluded by nonop_income()."""
+    other = (inc["other_inc"] or {}).get(p) if inc.get("other_inc") is not None else None
+    no = nonop_income(inc, p)
+    return max(other or 0, 0) + max(no or 0, 0), other, no
+
+
+def recurring_gains(cur, months, fy, fy2):
+    """Annual amount of gains judged recurring: per item (other income, non-operating), positive in the
+    current period and in both previous fiscal years -> the smallest of the three (current annualized)."""
+    total = 0.0
+    for k in (1, 2):  # (gains, other, nonop) -> other, nonop
+        vals = [cur[k] * 12 / months if cur[k] is not None and months else None,
+                fy[k] if fy else None, fy2[k] if fy2 else None]
+        if all(v is not None and v > 0 for v in vals):
+            total += min(vals)
+    return total
 
 
 def nonop_income(inc, p):
@@ -483,32 +545,61 @@ def collect(symbol, as_of=None):
         prev_same = prev_fy = next((d for d in periods if d != end), None)
     if p != 12 and prev_fy is None:  # fiscal-year change: the remaining column is the last full year
         prev_fy = next((d for d in periods if d not in (end, prev_same)), None)
-    # some formats (banks) leave the prior-FY column empty: take it from the annual report
-    if prev_fy and p != 12 and not inc["net"].get(prev_fy):
+    # the last annual report: the two previous fiscal years (recurring gains, dividends of two AGMs);
+    # some formats (banks) also leave the prior-FY column of the interim report empty
+    ast = ainc = None
+    if p == 12:
+        ast, ainc = st, inc
+    elif prev_fy:
         for (pp, ee), l in by_period.items():
             if pp == 12 and ee[:7] == prev_fy[:7]:
                 ast = load_statement(l)
-                if ast:
-                    ainc = income(ast["is"])
-                    for k in inc:
-                        if ast["end"] in ainc[k]:
-                            inc[k][prev_fy] = ainc[k][ast["end"]]
+                ainc = income(ast["is"]) if ast else None
                 break
+    if ainc and p != 12 and not inc["net"].get(prev_fy):
+        for k in inc:
+            if ast["end"] in ainc[k]:
+                inc[k][prev_fy] = ainc[k][ast["end"]]
     out["prev_fy_end"] = prev_fy
 
     rev, net = inc["rev"].get(end), inc["net"].get(end)
     fis = fis_profit(inc, end)
     out.update(rev=rev, net=net, fis=fis, cogs=abs(inc["cogs"].get(end) or 0) or None,
-               nonop=nonop_income(inc, end), nonop_rule=NONOP_RULE)
+               nonop=nonop_income(inc, end), nonop_rule=NONOP_RULE, method=METHOD)
+    cur_g = gains_of(inc, end)
+    out["gains"], out["other_inc"] = cur_g[0], cur_g[1]
+    fy_g = fy2_g = None
+    if ainc and ast:
+        fy_end = ast["end"]
+        fy2_end = next((d for d in sorted({k for d in ainc.values() for k in d}, reverse=True) if d < fy_end), None)
+        fy_g = gains_of(ainc, fy_end) if p != 12 else None
+        fy2_g = gains_of(ainc, fy2_end) if fy2_end else None
+        if p == 12:  # the latest report is itself annual: compare with the two years before
+            fy_g, fy2_g = fy2_g, None
+            for (pp, ee), l in by_period.items():
+                if pp == 12 and fy2_end and ee[:7] == fy2_end[:7] and ee != end:
+                    a2 = load_statement(l)
+                    if a2:
+                        i2 = income(a2["is"])
+                        d2 = next((d for d in sorted({k for d in i2.values() for k in d}, reverse=True) if d < a2["end"]), None)
+                        fy2_g = gains_of(i2, d2) if d2 else None
+                    break
+    out["recurring_gains"] = recurring_gains(cur_g, p, fy_g, fy2_g) if fy_g else 0.0
     if rev is None or inc["op"].get(end) is None:
         out["notes"].append("ساختار صورت سود و زیان غیراستاندارد (بانک/بیمه/…) — درآمد یا سود عملیاتی پیدا نشد")
     out["rev_prev_same"] = inc["rev"].get(prev_same) if prev_same else None
     if prev_fy:
         out["fy_rev"], out["fy_net"] = inc["rev"].get(prev_fy), inc["net"].get(prev_fy)
-    if p == 12:
-        out["ttm_net"] = net
-    elif prev_fy and prev_same and None not in (inc["net"].get(prev_fy), inc["net"].get(prev_same), net):
-        out["ttm_net"] = inc["net"][prev_fy] - inc["net"][prev_same] + net
+
+    def ttm(k):
+        """Last 12 months: the current period replaces the same period of last year."""
+        if p == 12:
+            return inc[k].get(end)
+        vals = (inc[k].get(prev_fy), inc[k].get(prev_same), inc[k].get(end)) if prev_fy and prev_same else (None,)
+        return vals[0] - vals[1] + vals[2] if None not in vals else None
+    out["ttm_net"] = ttm("net")
+    out["ttm_rev"] = ttm("rev")
+    out["ttm_cogs"] = abs(ttm("cogs")) if ttm("cogs") is not None else None
 
     def cum(per_months, year_end):
         """(rev, fis) cumulative for a period of the given fiscal year, from its own report."""
@@ -545,7 +636,8 @@ def collect(symbol, as_of=None):
     # balance sheet
     bs = st["bs"]
     ta = find(bs, "جمع دارایی‌ها")
-    out["receivables"] = find(bs, "دریافتنی‌های تجاری و سایر دریافتنی‌ها").get(end)
+    rec = find(bs, "دریافتنی‌های تجاری و سایر دریافتنی‌ها")
+    out["receivables"] = rec.get(end)
     out["total_assets"] = ta.get(end)
     out["total_liabilities"] = find(bs, "جمع بدهی‌ها").get(end)
     out["equity"] = find(bs, "جمع حقوق مالکانه").get(end)
@@ -556,14 +648,32 @@ def collect(symbol, as_of=None):
         chg = out["shares"] / (out["capital"] * 1e6 / 1000) - 1  # par value 1000 rials
         if abs(chg) > 0.02:
             out["capital_change_after_report"] = chg
-            out["notes"].append(f"افزایش سرمایه بعد از گزارش: تعداد سهام فعلی {chg * 100:+.0f}٪ نسبت به سرمایه گزارش؛ "
-                                "اگر افزایش از محل آورده نقدی بوده، سود/دارایی متناظر هنوز در گزارش نیست")
+            inc = None
+            if chg > 0:
+                try:
+                    inc = capital_increase(variant, out["capital"], out["shares"], add_months(end, -12), as_of)
+                except Exception as e:  # noqa: BLE001
+                    out["notes"].append(f"اطلاعیه افزایش سرمایه خوانده نشد: {e}"[:200])
+            if inc:
+                out["capital_increase"] = inc
+                out["cash_increase"] = inc["cash"]
+                src = "، ".join(f"{lab} {v / 1e4:,.0f}" for lab, v in (
+                    ("آورده نقدی", inc["cash"]), ("سود انباشته", inc["retained"]), ("اندوخته", inc["reserve"]),
+                    ("تجدید ارزیابی", inc["revaluation"]), ("صرف سهام", inc["premium"])) if v)
+                out["notes"].append(f"افزایش سرمایه {chg * 100:+.0f}٪ بعد از گزارش (میلیارد تومان: {src})"
+                                    + ("؛ آورده نقدی از ارزش بازار در P/E کم شد" if inc["cash"] else ""))
+            else:
+                out["notes"].append(f"افزایش سرمایه بعد از گزارش: تعداد سهام فعلی {chg * 100:+.0f}٪ نسبت به سرمایه گزارش؛ "
+                                    "محل آن پیدا نشد (اگر آورده نقدی بوده، سود/دارایی متناظر هنوز در گزارش نیست)")
     inv = find(bs, "موجودی مواد و کالا")
     other = [d for d in ta if d != end]
     prior_bs = max(other) if other else None
     if inv.get(end) is not None:
         vals = [inv.get(end)] + ([inv.get(prior_bs)] if prior_bs and inv.get(prior_bs) is not None else [])
         out["avg_inventory"] = sum(vals) / len(vals)
+    if rec.get(end) is not None:
+        vals = [rec.get(end)] + ([rec.get(prior_bs)] if prior_bs and rec.get(prior_bs) is not None else [])
+        out["avg_receivables"] = sum(vals) / len(vals)
 
     # dividends (Codal order: prior FY, then current period)
     pairs = equity_dividends(st["eq"])
@@ -572,8 +682,11 @@ def collect(symbol, as_of=None):
     out["agm_held_this_period"] = bool(len(pairs) >= 2 and pairs[1][0] > 0)
     out["last_dividend"] = next((d for d, _ in reversed(pairs) if d > 0), None)
     if len(ratios) == 2 and ratios[1][0] == 0 and p <= 3:
-        ratios = ratios[:1]
-        out["notes"].append("مجمع سال جاری هنوز در دوره گزارش نبوده؛ نسبت تقسیم سود فقط از سال قبل")
+        # this year's AGM is not in the report yet: the AGM before last comes from the annual report
+        older = [(d, r) for d, r in equity_dividends(ast["eq"]) if r and r > 0][:1] if ast and ast is not st else []
+        ratios = older + ratios[:1]
+        if not older:
+            out["notes"].append("مجمع سال جاری هنوز در دوره گزارش نبوده؛ نسبت تقسیم سود فقط از سال قبل")
     out["div_ratios"] = ratios
     out["period_days"] = DAYS.get(p, round(p * 30.4))
 
@@ -595,28 +708,29 @@ def collect(symbol, as_of=None):
 
 
 def core_margin(r):
-    """Net margin without non-operating gains (conservative: one-off gains such as asset sales,
-    deposit interest or FX revaluation are not assumed to repeat; non-operating losses are kept)."""
+    """Net margin of realized, recurring profit: without other operating income and non-operating
+    gains (asset sales, deposit interest, FX revaluation …; livestock sales stay); all expenses kept."""
     if not r.get("rev") or r["rev"] <= 0 or r.get("net") is None:
         return r.get("net_margin")
-    return (r["net"] - max(r.get("nonop") or 0, 0)) / r["rev"]
+    gains = r["gains"] if r.get("gains") is not None else max(r.get("nonop") or 0, 0)
+    return (r["net"] - gains) / r["rev"]
 
 
 def forward_net(r):
     """Forward (current fiscal year) net income, same rule as the FIS sheet.
 
-    Monthly report available: monthly cumulative sales / months x 12 x net margin without non-operating
-    gains (holdings: prior-FY margin, because interim dividend income is seasonal). Otherwise interim
-    FIS profit x 12 / months.
+    Monthly report available: monthly cumulative sales / months x 12 x core_margin() + the gains that
+    recurred in each of the last three periods (recurring_gains). Holdings: prior-FY margin, because
+    interim dividend income is seasonal. Otherwise interim FIS profit x 12 / months.
     """
     fmt = (r.get("format") or "").replace("‌", " ")
     if r.get("m_cum_rev") and r.get("m_months"):
         fwd_sales = r["m_cum_rev"] * 12 / r["m_months"]
-        margin = core_margin(r)
         if "سرمایه گذاری" in fmt and r.get("fy_rev") and r["fy_rev"] > 0 and r.get("fy_net") is not None:
-            margin = r["fy_net"] / r["fy_rev"]
+            return fwd_sales * r["fy_net"] / r["fy_rev"], fwd_sales
+        margin = core_margin(r)
         if margin is not None:
-            return fwd_sales * margin, fwd_sales
+            return fwd_sales * margin + (r.get("recurring_gains") or 0), fwd_sales
         return None, fwd_sales
     if r.get("fis") is not None and r.get("months"):
         return r["fis"] * 12 / r["months"], (r["rev"] * 12 / r["months"] if r.get("rev") else None)

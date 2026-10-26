@@ -326,7 +326,7 @@ def run(force=False, dry_run=False):
 
     log.info("[2/6] collecting %d symbols from Codal (~1 min each)", len(pending_symbols()))
     run_skill("run_all.py", config.WORK_DIR)
-    run_skill("backfill_nonop.py", config.WORK_DIR)  # older results lack the non-operating income field
+    run_skill("recompute.py", config.WORK_DIR)  # results saved by an older method, re-derived from the cache
     log.info("[3/6] refreshing prices")
     inv = config.WORK_DIR / "investees"
     refresh_prices({inv / f"{name}.json" for name in state["stale_investees"]})

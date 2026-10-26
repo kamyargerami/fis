@@ -27,6 +27,7 @@ import os
 import statistics
 import sys
 import traceback
+import urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -102,6 +103,8 @@ def parse_portfolio(serial):
                     pos["own"] = c
                 elif lab == norm("ارزش بازار") and "own" in pos and "mv1" not in pos:
                     pos["mv1"] = c
+                elif lab == norm("بهای تمام شده") and "own" in pos and "cost1" not in pos:
+                    pos["cost1"] = c  # end-of-period cost
                 elif lab == norm("ارزش هر سهم (ریال)"):
                     pos["vps"] = c
             for r in t[2:]:
@@ -121,7 +124,7 @@ def parse_portfolio(serial):
                 total = cap * 1e6 / par
                 holdings.append({"name": name, "capital": cap, "par": par, "shares_held": s_end,
                                  "total_shares": total, "own": s_end / total,
-                                 "report_mv": get("mv1"), "report_vps": get("vps")})
+                                 "report_mv": get("mv1"), "report_vps": get("vps"), "report_cost": get("cost1")})
         elif norm("تاریخ برگزاری مجمع") in h2 or norm("تاریخ برگزاری مجمع") in h1:
             for r in t[2:]:
                 c = [x for x, _ in r]
@@ -198,6 +201,7 @@ def evaluate_holding(h, workdir, mw):
     detail = []
     payouts = []
     unmatched_income = []
+    unrealized, listed_cost, no_cost = 0.0, 0.0, 0
     for p in rows:
         ins, score = match_instrument(p["name"], p["total_shares"], mw)
         item = dict(p)
@@ -209,6 +213,12 @@ def evaluate_holding(h, workdir, mw):
             item["value_today"] = p["report_mv"] or 0
             item["note"] = "قیمت روز پیدا نشد؛ ارزش بازار گزارش پورتفو"
         listed_today += item["value_today"] or 0
+        if p.get("report_cost") is not None:  # unrealized gain of the listed portfolio at today's price
+            listed_cost += p["report_cost"]
+            item["unrealized"] = (item["value_today"] or 0) - p["report_cost"]
+            unrealized += item["unrealized"]
+        else:
+            no_cost += 1
 
         # look-through income
         dv = divs.get(name_key(p["name"]))
@@ -275,7 +285,16 @@ def evaluate_holding(h, workdir, mw):
         costs = max(0.0, h["fy_rev"] - h["fy_net"])
     fwd_net = income - costs
     other_assets = (h.get("total_assets") or 0) - (h.get("lt_investments") or 0) - (h.get("st_investments") or 0)
-    nav = listed_today + other_assets - (h.get("total_liabilities") or 0)
+    # NAV = equity + unrealized gain of the listed portfolio (today's value - cost); unlisted investments
+    # stay at cost, which is already in equity
+    cash_inc = h.get("cash_increase") or 0  # capital increase paid in cash after the report
+    nav = (h.get("equity") or 0) + unrealized + cash_inc
+    mc_val = mc - cash_inc if mc else mc  # earnings ratios: the new cash has not earned anything yet
+    if cash_inc:
+        notes.append(f"آورده نقدی افزایش سرمایه بعد از گزارش ({cash_inc / 1e4:,.0f} میلیارد تومان) به NAV اضافه "
+                     "و در P/E و P/D از ارزش بازار کم شد")
+    if no_cost:
+        notes.append(f"{no_cost} سهم بدون بهای تمام شده در گزارش پورتفو؛ سود تحقق‌نیافته آن‌ها در NAV نیست")
     po_h = payout(h)
     # the holding pays dividends out of cash dividends it receives, not equity-method income
     cash_net = cash_income - costs
@@ -298,15 +317,17 @@ def evaluate_holding(h, workdir, mw):
         "n_listed": len(detail), "listed_value_today": listed_today,
         "listed_value_report": sum(d.get("report_mv") or 0 for d in detail),
         "other_assets": other_assets, "total_liabilities": h.get("total_liabilities"), "nav": nav,
+        "equity": h.get("equity"), "listed_cost": listed_cost, "unrealized": unrealized,
+        "roa": div(h.get("ttm_net"), h.get("total_assets")), "roe": div(h.get("ttm_net"), h.get("equity")),
         "p_nav80": div(mc, 0.8 * nav) if nav and nav > 0 else None,
         "income_fwd": income, "cash_income_fwd": cash_income, "costs": costs, "net_fwd": fwd_net,
         "cash_net_fwd": cash_net, "payout": po_h,
         "div_fwd": fwd_div, "div_last": last_div,
         "dps_fwd": fwd_div * 1e6 / h["shares"] if fwd_div and h.get("shares") else None,
         "dps_last": last_div * 1e6 / h["shares"] if last_div and h.get("shares") else None,
-        "pd_fwd": div(mc, fwd_div), "pd_last": div(mc, last_div),
-        "pe_fwd": div(mc, fwd_net) if fwd_net > 0 else None,
-        "pe_ttm": div(mc, h.get("ttm_net")) if h.get("ttm_net") and h["ttm_net"] > 0 else None,
+        "pd_fwd": div(mc_val, fwd_div), "pd_last": div(mc_val, last_div), "cash_increase": cash_inc or None,
+        "pe_fwd": div(mc_val, fwd_net) if fwd_net > 0 else None,
+        "pe_ttm": div(mc_val, h.get("ttm_net")) if h.get("ttm_net") and h["ttm_net"] > 0 else None,
         "pb": div(mc, h.get("equity")), "pa": div(mc, h.get("total_assets")),
         "debt_ratio": div(h.get("total_liabilities"), h.get("total_assets")),
         "notes": notes, "detail": detail, "report_url": h.get("m_url"),
@@ -340,9 +361,15 @@ def main():
             o = evaluate_holding(h, work, mw)
         except Exception as e:  # noqa: BLE001
             o = {"symbol": h["symbol"], "error": f"خطای اجرا: {e!r}", "trace": traceback.format_exc()[-600:]}
-        if fetch.TRANSIENT > before:  # investees collected so far are kept and reused next run
-            print(f"STOPPED at {h['symbol']}: Codal is throttling or unreachable; run again later", flush=True)
-            sys.exit(75)
+        if fetch.TRANSIENT > before:
+            e = fetch.LAST_TRANSIENT
+            if isinstance(e, urllib.error.HTTPError) and e.code >= 500:
+                # one broken letter export, not an outage: keep going with what could be read
+                o.setdefault("notes", []).append(f"خطای سرور کدال هنگام خواندن بخشی از داده‌ها: {e}")
+                fetch.TRANSIENT = 0
+            else:  # investees collected so far are kept and reused next run
+                print(f"STOPPED at {h['symbol']}: Codal is throttling or unreachable; run again later", flush=True)
+                sys.exit(75)
         o["nested_in"] = h.get("_nested_in")
         out.append(o)
         print(f"[{i}] {h['symbol']}: {o.get('error') or round(o['p_nav80'] or 0, 3)}", flush=True)

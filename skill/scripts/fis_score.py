@@ -173,8 +173,9 @@ def compute_variables(data):
     # 9. Collection period
     days = data.get("period_days", 365)
     sales_total = data.get("period_sales")
-    if ar is not None and sales_total:
-        v["collection_days"] = ar / sales_total * days
+    ar_avg = bs["receivables_avg"] if bs.get("receivables_avg") is not None else ar  # opening/closing average
+    if ar_avg is not None and sales_total:
+        v["collection_days"] = ar_avg / sales_total * days
     # 10. Inventory period
     inv = bs.get("average_inventory")
     if inv is None and bs.get("inventory_open") is not None and bs.get("inventory_close") is not None:

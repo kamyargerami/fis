@@ -36,8 +36,16 @@ def pos(x):
     return x is not None and x > 0
 
 
+def pct(a, b):
+    """a / b in percent, or None (b must be positive: ROE of negative equity means nothing)."""
+    return round(a / b * 100, 1) if a is not None and pos(b) else None
+
+
 def to_input(r):
     mcap = r["price"] * r["shares"] / 1e6 if r.get("price") and r.get("shares") else None
+    # cash raised in a capital increase after the report has not earned anything in the reports yet:
+    # valuation ratios use the market cap without it (= the market cap before the increase)
+    val_mcap = mcap - (r.get("cash_increase") or 0) if mcap else None
     ttm = r.get("ttm_net")
     loss = (ttm <= 0) if ttm is not None else (r.get("net") is not None and r["net"] <= 0)
     rev, cogs = r.get("rev"), r.get("cogs")
@@ -45,18 +53,21 @@ def to_input(r):
         "company": r["symbol"],
         "is_loss_making": loss,
         "has_monthly_reports": True,
-        "market_cap": mcap,
+        "market_cap": val_mcap,
         "months_elapsed": r.get("months"),
         "ytd_net_income_fis": r.get("fis"),
         "ytd_sales": rev if pos(rev) else None,
         "ttm_net_income": ttm,
         "sales_period_prior_year": r.get("rev_prev_same") if pos(r.get("rev_prev_same")) else None,
-        "period_days": r.get("period_days", 365),
-        "period_sales": rev if pos(rev) else None,
-        "period_cogs": cogs if pos(cogs) else None,
+        # turnover periods: last-12-month revenue / cost of sales over average balances, 365 days
+        "period_days": 365 if pos(r.get("ttm_rev")) else r.get("period_days", 365),
+        "period_sales": r["ttm_rev"] if pos(r.get("ttm_rev")) else (rev if pos(rev) else None),
+        "period_cogs": (r["ttm_cogs"] if pos(r.get("ttm_rev")) and pos(r.get("ttm_cogs"))
+                        else (cogs if pos(cogs) and not pos(r.get("ttm_rev")) else None)),
         "risk_free_rate": RF,
         "balance_sheet": {
             "receivables": r.get("receivables") if pos(rev) else None,
+            "receivables_avg": r.get("avg_receivables") if pos(rev) else None,
             "total_assets": r.get("total_assets"),
             "average_inventory": r.get("avg_inventory") if pos(cogs) else None,
         },
@@ -91,7 +102,7 @@ def to_input(r):
         d["dividends"] = {"last_year": {"dividend": dv[0][0], "retained_earnings": dv[0][1]}}
         if len(dv) > 1:
             d["dividends"]["this_year"] = {"dividend": dv[1][0], "retained_earnings": dv[1][1]}
-    return d, mcap
+    return d, val_mcap
 
 
 def _n(sym):  # TSETMC uses Arabic ي/ك, the user's list Persian ی/ک
@@ -120,6 +131,7 @@ def is_holding(r):
     return not r.get("error") and "سرمایه گذاری" in f and "صندوق" not in f
 
 
+MAX_RECEIVABLES_TO_ASSETS = 80  # % ; holdings are exempt (their receivables are mostly dividends due)
 rows, excluded = [], []
 for s, r in raw.items():
     if r.get("error"):
@@ -133,6 +145,11 @@ for s, r in raw.items():
         excluded.append((s, r.get("name"), "زیان‌ده (سود ۱۲ ماه گذشته ≤ صفر) — طبق مقاله حذف", r.get("report_url")))
         continue
     vals = {x["key"]: x for x in o["rows"]}
+    rta = vals["receivables_to_assets"]["value"]
+    if isinstance(rta, (int, float)) and rta > MAX_RECEIVABLES_TO_ASSETS:
+        excluded.append((s, r.get("name"), f"مطالبات {rta:.0f}٪ کل دارایی‌هاست (بیش از {MAX_RECEIVABLES_TO_ASSETS}٪) — "
+                         "بخش بزرگی از دارایی وصول‌نشده است و کیفیت سود قابل اتکا نیست", r.get("report_url")))
+        continue
     # P/D = forward P/E / payout ratio (forward dividend = forward earnings x the payout variable)
     pe, payout = vals["forward_pe"]["value"], vals["dividend_payout"]["value"]
     pd_fwd = pe / (payout / 100) if isinstance(pe, (int, float)) and pe > 0 and payout else None
@@ -168,8 +185,9 @@ ws = wb.active
 ws.title = "رتبه‌بندی FIS"
 cols = ["رتبه", "نماد", "نام شرکت", "نمره FIS (نرمال‌شده از ۱۰۰)", "امتیاز خام", "حداکثر قابل‌محاسبه",
         "بالاتر از میانگین گروه؟", "وضعیت P/E (اخزا ۴۰٪)", "قیمت (ریال)", "ارزش بازار (میلیارد تومان)",
-        "آخرین گزارش", "ماه‌های دوره", "P/E TTM", "P/D آینده‌نگر",
-        "سود غیرعملیاتی دوره (میلیارد تومان)", "سهم سود غیرعملیاتی از سود خالص (%)"]
+        "آورده نقدی افزایش سرمایه بعد از گزارش (میلیارد تومان)", "آخرین گزارش", "ماه‌های دوره", "P/E TTM", "P/D آینده‌نگر", "ROA (%)", "ROE (%)",
+        "سایر درآمدها و سود غیرعملیاتی دوره (میلیارد تومان)", "سهم آن از سود خالص (%)",
+        "سود تکرارشونده افزوده به برآورد (سالانه، میلیارد تومان)"]
 for k in ORDER:
     cols += [THRESHOLDS[k]["label"], f"امتیاز ({THRESHOLDS[k]['max']})"]
 cols += ["زیرمجموعه هلدینگ (درصد مالکیت)", "منبع نماد", "متغیرهای فاقد داده", "یادداشت", "لینک کدال"]
@@ -181,10 +199,13 @@ def fis_line(x, rank):
     above = ("بله" if o["normalized_100"] > avg else "خیر") if rank != "—" else "—"
     line = [rank, r["symbol"], r.get("name"), o["normalized_100"], o["total"], o["max_available"],
             above, o.get("pe_signal", "—"), r.get("price"),
-            round(x["mcap"] / 1e4, 1) if x["mcap"] else None, r.get("report"), r.get("months"),
+            round((x["mcap"] + (r.get("cash_increase") or 0)) / 1e4, 1) if x["mcap"] else None,
+            round(r["cash_increase"] / 1e4, 1) if r.get("cash_increase") else None, r.get("report"), r.get("months"),
             round(x["pe_ttm"], 2) if x["pe_ttm"] else None, round(x["pd_fwd"], 2) if x["pd_fwd"] else None,
-            round(r["nonop"] / 1e4, 1) if r.get("nonop") is not None else None,
-            round(r["nonop"] / r["net"] * 100, 1) if r.get("nonop") is not None and r.get("net") else None]
+            pct(r.get("ttm_net"), r.get("total_assets")), pct(r.get("ttm_net"), r.get("equity")),
+            round(r["gains"] / 1e4, 1) if r.get("gains") is not None else None,
+            pct(r.get("gains"), r.get("net")),
+            round(r["recurring_gains"] / 1e4, 1) if r.get("recurring_gains") else None]
     for k in ORDER:
         v = x["vals"][k]
         val = round(v["value"], 2) if isinstance(v["value"], (int, float)) else v["value"]
@@ -233,18 +254,22 @@ def _hnotes(h):
 wh = wb.create_sheet("سرمایه‌گذاری و هلدینگ‌ها", 1)
 B = 1e4  # million rials -> billion tomans
 hcols = ["رتبه", "نماد", "نام", "ارزش بازار ÷ (۸۰٪ NAV)", "قیمت (ریال)", "ارزش بازار (میلیارد تومان)",
-         "NAV (میلیارد تومان)", "ارزش روز سهام بورسی (میلیارد تومان)", "ارزش همان سهام در گزارش (میلیارد تومان)",
-         "سایر دارایی‌ها (میلیارد تومان)", "بدهی‌ها (میلیارد تومان)",
+         "NAV (میلیارد تومان)", "حقوق صاحبان سهام (میلیارد تومان)", "سود تحقق‌نیافته پورتفوی بورسی (میلیارد تومان)",
+         "ارزش روز سهام بورسی (میلیارد تومان)", "بهای تمام شده سهام بورسی (میلیارد تومان)",
+         "ارزش همان سهام در گزارش (میلیارد تومان)", "بدهی‌ها (میلیارد تومان)", "ROA (%)", "ROE (%)",
          "P/D آینده‌نگر", "سود تقسیمی آینده‌نگر هر سهم (ریال)", "P/D آخرین مجمع", "سود تقسیمی آخرین مجمع هر سهم (ریال)",
          "P/E آینده‌نگر", "P/E TTM", "P/B", "P/A", "نسبت بدهی",
          "سود آینده‌نگر (میلیارد تومان)", "سود نقدی دریافتی آینده‌نگر (میلیارد تومان)", "هزینه‌های هلدینگ (میلیارد تومان)",
          "نسبت تقسیم سود هلدینگ", "سال مالی مبنا", "تعداد سهام بورسی پورتفو", "گزارش پورتفو", "یادداشت", "لینک کدال"]
-header(wh, hcols, {2: 11, 3: 26, 25: 24, 27: 34, 28: 45, 29: 30})
+header(wh, hcols, {2: 11, 3: 26, 28: 24, 30: 34, 31: 45, 32: 30})
 r2 = lambda v, n=2: round(v, n) if isinstance(v, (int, float)) else v  # noqa: E731
 for i, h in enumerate(ok, 1):
     wh.append([i, h["symbol"], h.get("name"), r2(h["p_nav80"], 3), h.get("price"), r2((h.get("market_cap") or 0) / B, 1),
-               r2(h["nav"] / B, 1), r2(h["listed_value_today"] / B, 1), r2(h["listed_value_report"] / B, 1),
-               r2(h["other_assets"] / B, 1), r2((h.get("total_liabilities") or 0) / B, 1),
+               r2(h["nav"] / B, 1), r2((h.get("equity") or 0) / B, 1), r2((h.get("unrealized") or 0) / B, 1),
+               r2(h["listed_value_today"] / B, 1), r2((h.get("listed_cost") or 0) / B, 1),
+               r2(h["listed_value_report"] / B, 1), r2((h.get("total_liabilities") or 0) / B, 1),
+               r2(h["roa"] * 100, 1) if h.get("roa") is not None else None,
+               r2(h["roe"] * 100, 1) if h.get("roe") is not None else None,
                r2(h.get("pd_fwd")), r2(h.get("dps_fwd"), 0), r2(h.get("pd_last")), r2(h.get("dps_last"), 0),
                r2(h.get("pe_fwd")), r2(h.get("pe_ttm")), r2(h.get("pb")), r2(h.get("pa")), r2(h.get("debt_ratio"), 3),
                r2(h["net_fwd"] / B, 1), r2(h["cash_net_fwd"] / B, 1), r2(h["costs"] / B, 1), r2(h.get("payout"), 3),
@@ -302,12 +327,17 @@ notes = [
     "داده‌ها: آخرین صورت مالی ن-۱۰ (غیرتلفیقی) هر نماد از کدال + قیمت پایانی و تعداد سهام از TSETMC در تاریخ اجرا.",
     "سود FIS = سود عملیاتی + هزینه استثنایی کاهش ارزش دریافتنی‌ها − هزینه مالی − مالیات سال جاری (حذف اقلام غیرعملیاتی و مالیات سال‌های قبل).",
     "فروش آینده‌نگر (طبق مقاله) = فروش تجمعی آخرین گزارش فعالیت ماهانه (ن-۳۰) ÷ تعداد ماه‌ها × ۱۲.",
-    "سود آینده‌نگر = فروش آینده‌نگر × حاشیه سود خالص آخرین صورت میان‌دوره‌ای بدون سود غیرعملیاتی (برای هلدینگ‌ها: حاشیه سال مالی قبل). بدون گزارش ماهانه: سود FIS میان‌دوره‌ای × ۱۲ ÷ ماه‌ها.",
-    "سود غیرعملیاتی = سود قبل از مالیات (سود خالص + مالیات) − سود عملیاتی + هزینه مالی، از همان صورت مالی. محافظه‌کارانه: سودهای غیرعملیاتی و یک‌باره (فروش دارایی، سود سپرده، تسعیر ارز و …) تکرارشونده فرض نمی‌شوند و از سود آینده‌نگر کم می‌شوند (قبل از مالیات)؛ زیان غیرعملیاتی کم نمی‌شود. سود فروش دارایی زیستی مولد (دام) در شرکت‌های کشاورزی تکرارشونده است و کم نمی‌شود.",
+    "سود آینده‌نگر (محافظه‌کارانه، فقط سود تحقق‌یافته) = فروش آینده‌نگر × حاشیه سود خالص آخرین صورت میان‌دوره‌ای بدون «سایر درآمدها» و سود غیرعملیاتی + سود تکرارشونده (برای هلدینگ‌ها: حاشیه سال مالی قبل). همه هزینه‌ها (سایر هزینه‌ها، زیان غیرعملیاتی) کم می‌شوند. بدون گزارش ماهانه: سود FIS میان‌دوره‌ای × ۱۲ ÷ ماه‌ها.",
+    "سود غیرعملیاتی = سود قبل از مالیات (سود خالص + مالیات) − سود عملیاتی + هزینه مالی؛ سود فروش دارایی زیستی مولد (دام) جزو آن نیست و در سود می‌ماند.",
+    "سود تکرارشونده: هر قلم (سایر درآمدها، سود غیرعملیاتی) که در دوره جاری و هر دو سال مالی قبل مثبت بوده، به اندازه کمترینِ این سه (دوره جاری سالانه‌شده) به برآورد سالانه اضافه می‌شود.",
+    "افزایش سرمایه بعد از آخرین گزارش: محل آن از اطلاعیه کدال (ن-۵۷ تصمیمات مجمع فوق‌العاده یا ن-۷۳ تصمیمات هیئت‌مدیره) خوانده می‌شود. بخش «مطالبات و آورده نقدی» هنوز سودی در گزارش‌ها نساخته، پس در P/E، P/S، P/D و P/E TTM از ارزش بازار کم می‌شود (= ارزش بازار پیش از افزایش)؛ در هلدینگ‌ها به NAV اضافه می‌شود. افزایش از محل سود انباشته، اندوخته یا تجدید ارزیابی اثری ندارد.",
+    "ROA = سود خالص ۱۲ ماه اخیر ÷ کل دارایی‌ها؛ ROE = سود خالص ۱۲ ماه اخیر ÷ حقوق صاحبان سهام (پایان دوره).",
+    "دوره وصول = میانگین مطالبات (ابتدا و پایان دوره) ÷ درآمد ۱۲ ماه اخیر × ۳۶۵؛ دوره گردش کالا = میانگین موجودی ÷ بهای تمام شده ۱۲ ماه اخیر × ۳۶۵. «۱۲ ماه اخیر» یعنی دوره جاری جای همان دوره سال قبل در سال مالی قبل می‌نشیند.",
+    "شرکت‌هایی که مطالبات‌شان بیش از ۸۰٪ کل دارایی‌هاست حذف می‌شوند (برگه حذف‌شده، با دلیل). هلدینگ‌ها مستثنا هستند چون مطالباتشان بیشتر سود سهام دریافتنی است.",
     "رشد فروش تجمعی و «سال مالی» (ماه‌های پوشش) از گزارش ماهانه؛ اگر ستون دوره مشابه سال قبل نداشت، از صورت میان‌دوره‌ای.",
     "تطبیق با برآورد کارشناس: تکیمیا در ۱۳ مهر ۱۴۰۵ — P/E فوروارد 2.99 و P/S فوروارد 2.05 دقیقاً بازتولید شد.",
     "حاشیه سود = سود FIS ÷ درآمد عملیاتی دوره تجمعی؛ رشد روند حاشیه = حاشیه فصل آخر نسبت به فصل قبل.",
-    "نسبت تقسیم سود = میانگین (سود سهام مصوب ÷ سود انباشته ابتدای همان سال) برای دو سال؛ اگر مجمع امسال هنوز برگزار نشده، فقط سال قبل.",
+    "نسبت تقسیم سود (فرمول مقاله) = میانگین (سود سهام مصوب ÷ سود انباشته ابتدای همان سال) برای دو مجمع اخیر؛ اگر مجمع امسال هنوز در گزارش نیست، مجمع سال قبل از آن از صورت مالی سالانه می‌آید.",
     "P/D آینده‌نگر = P/E آینده‌نگر ÷ نسبت تقسیم سود (یعنی ارزش بازار ÷ سود آینده‌نگر × نسبت تقسیم)؛ برای شرکت بدون تقسیم سود یا سود آینده‌نگر منفی خالی است. هرچه کمتر، بهتر.",
     "حذف: صندوق‌ها و شرکت‌های زیان‌ده (سود خالص ۱۲ ماه گذشته ≤ صفر) طبق مقاله امتیازدهی نمی‌شوند.",
     "نمره نرمال‌شده = امتیاز خام ÷ حداکثر امتیاز متغیرهای قابل‌محاسبه × ۱۰۰ (برای بانک/هلدینگ که بعضی متغیرها معنا ندارند). رتبه‌بندی بر اساس همین ستون است.",
@@ -316,7 +346,7 @@ notes = [
     "محدوده P/E خرید = ۱÷اخزا + ۱ تا ۱.۵ (با اخزا ۴۰٪: ۳.۵ تا ۴)، خروج حدود ۷ تا ۸.",
     "آستانه‌های امتیاز هر متغیر در مقاله منتشر نشده و کالیبراسیون skill برای بورس تهران است.",
     "— شرکت‌های سرمایه‌گذاری و هلدینگ‌ها (تب دوم) با روش جداگانه ارزیابی می‌شوند و در رتبه‌بندی FIS نیستند:",
-    "NAV = ارزش سهام بورسی/فرابورسی پورتفو به قیمت روز (تعداد سهام از آخرین گزارش پورتفوی ماهانه × قیمت پایانی TSETMC) + سایر دارایی‌ها (کل دارایی‌ها − سرمایه‌گذاری‌های بلندمدت و کوتاه‌مدت) − کل بدهی‌ها. سهام غیربورسی در NAV و سود حذف است.",
+    "NAV = جمع حقوق صاحبان سهام + سود تحقق‌نیافته پورتفوی بورسی (ارزش روز: تعداد سهام آخرین گزارش پورتفوی ماهانه × قیمت پایانی TSETMC، منهای بهای تمام شده انتهای دوره در همان گزارش). سرمایه‌گذاری غیربورسی فقط به بهای تمام شده (همان که در حقوق صاحبان سهام هست).",
     "شاخص اصلی = ارزش بازار ÷ (۸۰٪ × NAV)؛ هرچه کمتر، بهتر. رتبه‌بندی تب دوم بر همین اساس است.",
     "سود آینده‌نگر هلدینگ (استاندارد حسابداری): مالکیت زیر ۲۰٪ ← سود نقدی در تاریخ مجمع سرمایه‌پذیر (فقط اگر مجمع داخل سال مالی هلدینگ باشد؛ DPS واقعی اگر مجمع رفته، وگرنه EPS آینده‌نگر × نسبت تقسیم سود قبلی). مالکیت ۲۰٪ و بیشتر ← سهم از سود خالص سالی که داخل سال مالی هلدینگ تمام می‌شود.",
     "سود هر سرمایه‌پذیر با همان روش ماهانه‌ی تب FIS پیش‌بینی می‌شود (برای سرمایه‌پذیرِ هلدینگ: سود سال مالی قبل). اگر صورت مالی پیدا نشد: جدول سود سهام گزارش پورتفو یا EPS تخمینی TSETMC × میانه نسبت تقسیم.",
