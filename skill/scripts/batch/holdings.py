@@ -137,21 +137,42 @@ def parse_portfolio(serial):
 
 # ---------------------------------------------------------------- investees
 _inv_cache = {}
+_results = None  # norm(symbol) -> path of run_all.py's result for that symbol
+
+
+def collected(symbol, workdir):
+    """run_all.py's result for symbol, if it has one that was not cut short by a failed fetch."""
+    global _results
+    if _results is None:
+        res_dir = os.path.join(workdir, "results")
+        _results = {norm(f[:-5]): os.path.join(res_dir, f) for f in os.listdir(res_dir) if f.endswith(".json")}
+    path = _results.get(norm(symbol))
+    if not path:
+        return None
+    try:
+        r = json.load(open(path, encoding="utf-8"))
+    except ValueError:
+        return None
+    return None if "fetch failed" in (r.get("error") or "") else r
 
 
 def investee(symbol, workdir):
     if symbol in _inv_cache:
         return _inv_cache[symbol]
     path = os.path.join(workdir, "investees", f"{symbol}.json")
-    if os.path.exists(path) and datetime.date.fromtimestamp(os.path.getmtime(path)) == datetime.date.today():
+    r = collected(symbol, workdir)  # already collected by run_all.py: same collect() output, no requests
+    if r is None and os.path.exists(path) and \
+            datetime.date.fromtimestamp(os.path.getmtime(path)) == datetime.date.today():
         r = json.load(open(path, encoding="utf-8"))
     else:
-        print(f"  investee {symbol}: collecting", flush=True)
         before = fetch.TRANSIENT
-        try:
-            r = collect(symbol)
-        except Exception as e:  # noqa: BLE001
-            r = {"symbol": symbol, "error": repr(e)}
+        if r is None:
+            print(f"  investee {symbol}: collecting", flush=True)
+            try:
+                r = collect(symbol)
+            except Exception as e:  # noqa: BLE001
+                r = {"symbol": symbol, "error": repr(e)}
+        # saved also when taken from results/, so the pipeline's stale mark (mtime 0) is cleared
         if fetch.TRANSIENT == before:  # a failed fetch is not saved, so the next run retries it
             os.makedirs(os.path.dirname(path), exist_ok=True)
             json.dump(r, open(path + ".tmp", "w", encoding="utf-8"), ensure_ascii=False, default=str)

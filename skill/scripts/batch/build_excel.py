@@ -183,39 +183,61 @@ def header(ws, cols, widths=None):
 
 ws = wb.active
 ws.title = "رتبه‌بندی FIS"
-cols = ["رتبه", "نماد", "نام شرکت", "نمره FIS (نرمال‌شده از ۱۰۰)", "امتیاز خام", "حداکثر قابل‌محاسبه",
-        "بالاتر از میانگین گروه؟", "وضعیت P/E (اخزا ۴۰٪)", "قیمت (ریال)", "ارزش بازار (میلیارد تومان)",
-        "آورده نقدی افزایش سرمایه بعد از گزارش (میلیارد تومان)", "آخرین گزارش", "ماه‌های دوره", "P/E TTM", "P/D آینده‌نگر", "ROA (%)", "ROE (%)",
-        "سایر درآمدها و سود غیرعملیاتی دوره (میلیارد تومان)", "سهم آن از سود خالص (%)",
-        "سود تکرارشونده افزوده به برآورد (سالانه، میلیارد تومان)"]
-for k in ORDER:
-    cols += [THRESHOLDS[k]["label"], f"امتیاز ({THRESHOLDS[k]['max']})"]
-cols += ["زیرمجموعه هلدینگ (درصد مالکیت)", "منبع نماد", "متغیرهای فاقد داده", "یادداشت", "لینک کدال"]
-WIDTHS = {2: 11, 3: 26, 8: 22, 11: 34, len(cols) - 2: 40, len(cols) - 1: 40, len(cols): 30}
+# (key, header): main ratios first, then the other fields, then the FIS score of each variable.
+# Keys «v:<var>» are a variable's value, «s:<var>» its score.
+LAYOUT = [("rank", "رتبه"), ("symbol", "نماد"), ("name", "نام شرکت"),
+          ("score", "نمره FIS (نرمال‌شده از ۱۰۰)"), ("raw", "امتیاز خام"), ("max", "حداکثر قابل‌محاسبه"),
+          ("pe_signal", "وضعیت P/E (اخزا ۴۰٪)"), ("v:forward_pe", None), ("pd_fwd", "P/D آینده‌نگر"),
+          ("v:forward_ps", None), ("v:receivables_to_assets", None), ("v:collection_days", None),
+          ("v:inventory_days", None), ("v:dividend_payout", None), ("v:fis_margin", None),
+          ("v:margin_trend", None), ("v:sales_growth", None),
+          ("recurring", "سود تکرارشونده افزوده به برآورد (سالانه، میلیارد تومان)"),
+          ("gains", "سایر درآمدها و سود غیرعملیاتی دوره (میلیارد تومان)"), ("gains_pct", "سهم آن از سود خالص (%)"),
+          ("above", "بالاتر از میانگین گروه؟"), ("price", "قیمت (ریال)"), ("mcap", "ارزش بازار (میلیارد تومان)"),
+          ("cash_inc", "آورده نقدی افزایش سرمایه بعد از گزارش (میلیارد تومان)"), ("report", "آخرین گزارش"),
+          ("months", "ماه‌های دوره"), ("pe_ttm", "P/E TTM"), ("roa", "ROA (%)"), ("roe", "ROE (%)"),
+          ("v:earnings_expectation_gap", None), ("v:fiscal_year_coverage", None),
+          ("parents", "زیرمجموعه هلدینگ (درصد مالکیت)"), ("source", "منبع نماد"),
+          ("missing", "متغیرهای فاقد داده"), ("notes", "یادداشت"), ("link", "لینک کدال")]
+LAYOUT += [(f"s:{k}", "امتیاز {} از {}".format(
+    THRESHOLDS[k]["label"].replace(" (%)", "").replace(" (روز)", ""),
+    str(THRESHOLDS[k]["max"]).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")))) for k in ORDER]
+LAYOUT = [(k, h or THRESHOLDS[k[2:]]["label"]) for k, h in LAYOUT]
+assert {k[2:] for k, _ in LAYOUT if k.startswith("v:")} == set(ORDER)
+KEYS = [k for k, _ in LAYOUT]
+cols = [h for _, h in LAYOUT]
+LINK = KEYS.index("link")
+WIDTHS = {KEYS.index(k) + 1: w for k, w in (("symbol", 11), ("name", 26), ("pe_signal", 22), ("cash_inc", 34),
+                                              ("missing", 40), ("notes", 40), ("link", 30))}
 
 
 def fis_line(x, rank):
     r, o = x["r"], x["o"]
-    above = ("بله" if o["normalized_100"] > avg else "خیر") if rank != "—" else "—"
-    line = [rank, r["symbol"], r.get("name"), o["normalized_100"], o["total"], o["max_available"],
-            above, o.get("pe_signal", "—"), r.get("price"),
-            round((x["mcap"] + (r.get("cash_increase") or 0)) / 1e4, 1) if x["mcap"] else None,
-            round(r["cash_increase"] / 1e4, 1) if r.get("cash_increase") else None, r.get("report"), r.get("months"),
-            round(x["pe_ttm"], 2) if x["pe_ttm"] else None, round(x["pd_fwd"], 2) if x["pd_fwd"] else None,
-            pct(r.get("ttm_net"), r.get("total_assets")), pct(r.get("ttm_net"), r.get("equity")),
-            round(r["gains"] / 1e4, 1) if r.get("gains") is not None else None,
-            pct(r.get("gains"), r.get("net")),
-            round(r["recurring_gains"] / 1e4, 1) if r.get("recurring_gains") else None]
+    line = {
+        "rank": rank, "symbol": r["symbol"], "name": r.get("name"), "score": o["normalized_100"],
+        "raw": o["total"], "max": o["max_available"], "pe_signal": o.get("pe_signal", "—"),
+        "above": ("بله" if o["normalized_100"] > avg else "خیر") if rank != "—" else "—", "price": r.get("price"),
+        "mcap": round((x["mcap"] + (r.get("cash_increase") or 0)) / 1e4, 1) if x["mcap"] else None,
+        "cash_inc": round(r["cash_increase"] / 1e4, 1) if r.get("cash_increase") else None,
+        "report": r.get("report"), "months": r.get("months"),
+        "pe_ttm": round(x["pe_ttm"], 2) if x["pe_ttm"] else None,
+        "pd_fwd": round(x["pd_fwd"], 2) if x["pd_fwd"] else None,
+        "roa": pct(r.get("ttm_net"), r.get("total_assets")), "roe": pct(r.get("ttm_net"), r.get("equity")),
+        "gains": round(r["gains"] / 1e4, 1) if r.get("gains") is not None else None,
+        "gains_pct": pct(r.get("gains"), r.get("net")),
+        "recurring": round(r["recurring_gains"] / 1e4, 1) if r.get("recurring_gains") else None,
+        "parents": "، ".join(parents.get(_n(r["symbol"]), [])),
+        "source": "زیرمجموعه هلدینگ" if r.get("_from_holding") else "فهرست شما",
+        "missing": "، ".join(o["missing"]), "notes": " / ".join(r.get("notes", []) + o.get("notes", [])),
+        "link": r.get("report_url"),
+    }
     for k in ORDER:
         v = x["vals"][k]
         val = round(v["value"], 2) if isinstance(v["value"], (int, float)) else v["value"]
         if k == "forward_pe" and val is not None and val < 0:
             val = "منفی (سود آینده‌نگر ≤ ۰)"
-        line += [val, v["score"]]
-    extra = []
-    line += ["، ".join(parents.get(_n(r["symbol"]), [])), "زیرمجموعه هلدینگ" if r.get("_from_holding") else "فهرست شما",
-             "، ".join(o["missing"]), " / ".join(extra + r.get("notes", []) + o.get("notes", [])), r.get("report_url")]
-    return line
+        line[f"v:{k}"], line[f"s:{k}"] = val, v["score"]
+    return [line[k] for k in KEYS]
 
 
 def fis_sheet(ws, items, ranked):
@@ -229,8 +251,9 @@ def fis_sheet(ws, items, ranked):
     for row in ws.iter_rows(min_row=2):
         for c in row:
             c.alignment = Alignment(horizontal="center", vertical="center")
-        row[-1].hyperlink = row[-1].value
-        row[-1].style = "Hyperlink"
+        if row[LINK].value:
+            row[LINK].hyperlink = row[LINK].value
+            row[LINK].style = "Hyperlink"
 
 
 fis_sheet(ws, rows, ranked=True)
@@ -253,7 +276,7 @@ def _hnotes(h):
 
 wh = wb.create_sheet("سرمایه‌گذاری و هلدینگ‌ها", 1)
 B = 1e4  # million rials -> billion tomans
-hcols = ["رتبه", "نماد", "نام", "ارزش بازار ÷ (۸۰٪ NAV)", "قیمت (ریال)", "ارزش بازار (میلیارد تومان)",
+hcols = ["رتبه", "نماد", "نام", "ارزش بازار ÷ (۸۰٪ NAV) (%)", "قیمت (ریال)", "ارزش بازار (میلیارد تومان)",
          "NAV (میلیارد تومان)", "حقوق صاحبان سهام (میلیارد تومان)", "سود تحقق‌نیافته پورتفوی بورسی (میلیارد تومان)",
          "ارزش روز سهام بورسی (میلیارد تومان)", "بهای تمام شده سهام بورسی (میلیارد تومان)",
          "ارزش همان سهام در گزارش (میلیارد تومان)", "بدهی‌ها (میلیارد تومان)", "ROA (%)", "ROE (%)",
@@ -264,7 +287,7 @@ hcols = ["رتبه", "نماد", "نام", "ارزش بازار ÷ (۸۰٪ NAV)"
 header(wh, hcols, {2: 11, 3: 26, 28: 24, 30: 34, 31: 45, 32: 30})
 r2 = lambda v, n=2: round(v, n) if isinstance(v, (int, float)) else v  # noqa: E731
 for i, h in enumerate(ok, 1):
-    wh.append([i, h["symbol"], h.get("name"), r2(h["p_nav80"], 3), h.get("price"), r2((h.get("market_cap") or 0) / B, 1),
+    wh.append([i, h["symbol"], h.get("name"), r2(h["p_nav80"] * 100, 1), h.get("price"), r2((h.get("market_cap") or 0) / B, 1),
                r2(h["nav"] / B, 1), r2((h.get("equity") or 0) / B, 1), r2((h.get("unrealized") or 0) / B, 1),
                r2(h["listed_value_today"] / B, 1), r2((h.get("listed_cost") or 0) / B, 1),
                r2(h["listed_value_report"] / B, 1), r2((h.get("total_liabilities") or 0) / B, 1),
@@ -347,7 +370,7 @@ notes = [
     "آستانه‌های امتیاز هر متغیر در مقاله منتشر نشده و کالیبراسیون skill برای بورس تهران است.",
     "— شرکت‌های سرمایه‌گذاری و هلدینگ‌ها (تب دوم) با روش جداگانه ارزیابی می‌شوند و در رتبه‌بندی FIS نیستند:",
     "NAV = جمع حقوق صاحبان سهام + سود تحقق‌نیافته پورتفوی بورسی (ارزش روز: تعداد سهام آخرین گزارش پورتفوی ماهانه × قیمت پایانی TSETMC، منهای بهای تمام شده انتهای دوره در همان گزارش). سرمایه‌گذاری غیربورسی فقط به بهای تمام شده (همان که در حقوق صاحبان سهام هست).",
-    "شاخص اصلی = ارزش بازار ÷ (۸۰٪ × NAV)؛ هرچه کمتر، بهتر. رتبه‌بندی تب دوم بر همین اساس است.",
+    "شاخص اصلی = ارزش بازار ÷ (۸۰٪ × NAV)، به درصد (مثلاً ۴۰ یعنی ارزش بازار ۴۰٪ ِ ۸۰٪ NAV است)؛ هرچه کمتر، بهتر. رتبه‌بندی تب دوم بر همین اساس است.",
     "سود آینده‌نگر هلدینگ (استاندارد حسابداری): مالکیت زیر ۲۰٪ ← سود نقدی در تاریخ مجمع سرمایه‌پذیر (فقط اگر مجمع داخل سال مالی هلدینگ باشد؛ DPS واقعی اگر مجمع رفته، وگرنه EPS آینده‌نگر × نسبت تقسیم سود قبلی). مالکیت ۲۰٪ و بیشتر ← سهم از سود خالص سالی که داخل سال مالی هلدینگ تمام می‌شود.",
     "سود هر سرمایه‌پذیر با همان روش ماهانه‌ی تب FIS پیش‌بینی می‌شود (برای سرمایه‌پذیرِ هلدینگ: سود سال مالی قبل). اگر صورت مالی پیدا نشد: جدول سود سهام گزارش پورتفو یا EPS تخمینی TSETMC × میانه نسبت تقسیم.",
     "هزینه‌های هلدینگ = درآمد − سود خالص سال مالی قبل. سود تقسیمی آینده‌نگر = (سود نقدی دریافتی − هزینه‌ها) × نسبت تقسیم سود قبلی هلدینگ؛ سود تقسیمی آخرین مجمع هم جدا آمده است.",

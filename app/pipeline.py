@@ -207,10 +207,12 @@ def read_ranking(path):
     col = {h: i for i, h in reversed(list(enumerate(rows[0] if rows else [])))}  # first column per header
     get = lambda r, h: r[col[h]] if h in col else None  # noqa: E731
     for r in rows[1:]:
-        if r[1]:
-            fis[norm(r[1])] = {"symbol": r[1], "rank": r[0], "score": r[3], "raw": r[4],
-                               "above_avg": r[6], "pe_status": r[7], "fwd_pe": get(r, "P/E آینده‌نگر"),
-                               "fwd_pd": get(r, "P/D آینده‌نگر")}
+        if get(r, "نماد"):
+            fis[norm(get(r, "نماد"))] = {
+                "symbol": get(r, "نماد"), "rank": get(r, "رتبه"), "score": get(r, "نمره FIS (نرمال‌شده از ۱۰۰)"),
+                "raw": get(r, "امتیاز خام"), "above_avg": get(r, "بالاتر از میانگین گروه؟"),
+                "pe_status": get(r, "وضعیت P/E (اخزا ۴۰٪)"), "fwd_pe": get(r, "P/E آینده‌نگر"),
+                "fwd_pd": get(r, "P/D آینده‌نگر")}
     if len(wb.worksheets) > 1:
         for r in list(wb.worksheets[1].iter_rows(min_row=2, values_only=True)):
             if r[1]:
@@ -257,7 +259,7 @@ def plain_summary(facts):
             lines.append(f"• {c['symbol']}: {b.get('score', '—')} (رتبه {b.get('rank', '—')}) ← "
                          f"{a.get('score', '—')} (رتبه {a.get('rank', '—')})")
         elif c["holding_after"]:
-            lines.append(f"• {c['symbol']}: P/NAV80 = {c['holding_after']['p_nav80']}")
+            lines.append(f"• {c['symbol']}: P/NAV80 = {c['holding_after']['p_nav80']}٪")
         else:
             lines.append(f"• {c['symbol']}: در جدول FIS نیست (هلدینگ زیرمجموعه)")
     if facts.get("added_from_reports"):
