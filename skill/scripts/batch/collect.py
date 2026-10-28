@@ -233,7 +233,8 @@ def fis_profit(inc, p):
 
 
 NONOP_RULE = 2  # version of nonop_income()
-METHOD = 4  # version of collect()'s output; recompute.py re-derives older results from the HTTP cache
+MONTHLY_MAX_RATIO = 10  # reject a monthly report whose annualized sales exceed this × statement sales
+METHOD = 5  # version of collect()'s output; recompute.py re-derives older results from the HTTP cache
 CAPITAL_INCREASE_CODES = ("ن-۵۷", "ن-۷۳")  # extraordinary general meeting / board decisions on a capital increase
 
 
@@ -345,9 +346,11 @@ NON_REVENUE = ("انرژی", "مواد", "ارزی", "هزینه", "سپرده",
 
 
 def months_elapsed(period_end, year_end):
+    """Months of the fiscal year covered by period_end (1..12). A period after year_end belongs to the
+    next fiscal year (e.g. the first monthly report after an annual statement is month 1, not 13)."""
     py, pm = int(period_end[:4]), int(period_end[5:7])
     yy, ym = int(year_end[:4]), int(year_end[5:7])
-    return (py * 12 + pm) - (yy * 12 + ym) + 12
+    return ((py * 12 + pm) - (yy * 12 + ym) - 1) % 12 + 1
 
 
 def _groups(header_cells, pe, prior_date):
@@ -699,6 +702,16 @@ def collect(symbol, as_of=None):
         mr = None
         out["notes"].append(f"گزارش ماهانه خوانده نشد: {e}")
     if mr and mr["m_cum_rev"] > 0 and mr["m_months"] and mr["m_months"] >= 1:
+        ref = max(rev * 12 / p if rev else 0, out.get("fy_rev") or 0)
+        if ref > 0 and mr["m_cum_rev"] * 12 / mr["m_months"] > MONTHLY_MAX_RATIO * ref:
+            # wrong unit (rials instead of million rials) or one lumpy sale (real estate) annualized
+            out["notes"].append(f"فروش سالانه‌شده گزارش ماهانه بیش از {MONTHLY_MAX_RATIO} برابر فروش صورت مالی بود؛ "
+                                "آینده‌نگر از صورت میان‌دوره‌ای")
+            mr = None
+    if mr and mr["m_cum_rev"] > 0 and mr["m_months"] and mr["m_months"] >= 1:
+        if mr["m_period_end"] > yend:
+            out["notes"].append(f"گزارش ماهانه از سال مالی جدید است ({mr['m_months']} ماه)؛ "
+                                "حاشیه سود از آخرین صورت مالی سال قبل")
         out.update(mr)
     else:
         out["notes"].append("گزارش ماهانه قابل استفاده نبود؛ آینده‌نگر از صورت میان‌دوره‌ای")
