@@ -10,7 +10,7 @@ Method (professor's rule + accounting standard for dividend recognition):
 - Value at TODAY's price (TSETMC market watch) × shares held. If a holding can't be matched to a
   listed instrument, the report's own market value is used and flagged.
 - NAV = listed value today + (total assets − long/short-term investments) − total liabilities.
-- Main ratio = market cap ÷ (80% × NAV): lower is better.
+- Main ratio = market cap ÷ NAV (P/NAV): lower is better.
 - Look-through forward earnings for the holding's CURRENT fiscal year:
   * ownership < 20%: dividend income is recognised on the investee's AGM date, so an investee
     fiscal year counts only if its AGM falls inside the holding's fiscal year. Actual DPS if that
@@ -340,7 +340,7 @@ def evaluate_holding(h, workdir, mw):
         "other_assets": other_assets, "total_liabilities": h.get("total_liabilities"), "nav": nav,
         "equity": h.get("equity"), "listed_cost": listed_cost, "unrealized": unrealized,
         "roa": div(h.get("ttm_net"), h.get("total_assets")), "roe": div(h.get("ttm_net"), h.get("equity")),
-        "p_nav80": div(mc, 0.8 * nav) if nav and nav > 0 else None,
+        "p_nav": div(mc, nav) if nav and nav > 0 else None,
         "income_fwd": income, "cash_income_fwd": cash_income, "costs": costs, "net_fwd": fwd_net,
         "cash_net_fwd": cash_net, "payout": po_h,
         "div_fwd": fwd_div, "div_last": last_div,
@@ -393,7 +393,7 @@ def main():
                 sys.exit(75)
         o["nested_in"] = h.get("_nested_in")
         out.append(o)
-        print(f"[{i}] {h['symbol']}: {o.get('error') or round(o['p_nav80'] or 0, 3)}", flush=True)
+        print(f"[{i}] {h['symbol']}: {o.get('error') or round(o['p_nav'] or 0, 3)}", flush=True)
         if nested and not h.get("_nested_in"):
             for d in o.get("detail", []):
                 r = _inv_cache.get(d.get("symbol"))

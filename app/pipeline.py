@@ -216,7 +216,7 @@ def read_ranking(path):
     if len(wb.worksheets) > 1:
         for r in list(wb.worksheets[1].iter_rows(min_row=2, values_only=True)):
             if r[1]:
-                hold[norm(r[1])] = {"symbol": r[1], "rank": r[0], "p_nav80": r[3]}
+                hold[norm(r[1])] = {"symbol": r[1], "rank": r[0], "p_nav": r[3]}
     wb.close()
     return fis, hold
 
@@ -259,7 +259,7 @@ def plain_summary(facts):
             lines.append(f"• {c['symbol']}: {b.get('score', '—')} (رتبه {b.get('rank', '—')}) ← "
                          f"{a.get('score', '—')} (رتبه {a.get('rank', '—')})")
         elif c["holding_after"]:
-            lines.append(f"• {c['symbol']}: P/NAV80 = {c['holding_after']['p_nav80']}٪")
+            lines.append(f"• {c['symbol']}: P/NAV = {c['holding_after']['p_nav']}٪")
         else:
             lines.append(f"• {c['symbol']}: در جدول FIS نیست (هلدینگ زیرمجموعه)")
     if facts.get("added_from_reports"):
