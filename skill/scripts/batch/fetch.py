@@ -28,6 +28,9 @@ FOREVER = None
 # check it after each symbol and stop, so the next run resumes instead of saving a broken result
 TRANSIENT = 0
 LAST_TRANSIENT = None  # the error behind the last Throttled
+# Codal searches cached before this time are fetched again. run_all.py sets it to its start: a symbol
+# is re-collected because a new letter came out, and a search cached a few hours earlier would miss it.
+FRESH_SEARCH_SINCE = None
 
 
 class Throttled(RuntimeError):
@@ -63,7 +66,10 @@ def get(url, delay=1.5, ttl="auto", attempts=4):
     path = _path(url)
     ttl = ttl_for(url) if ttl == "auto" else ttl
     offline = os.environ.get("FIS_OFFLINE") == "1"  # same-day re-runs: use any cached copy
-    if os.path.exists(path) and (offline or ttl is FOREVER or time.time() - os.path.getmtime(path) < ttl):
+    stale_search = (FRESH_SEARCH_SINCE and "search.codal.ir" in url and os.path.exists(path)
+                    and os.path.getmtime(path) < FRESH_SEARCH_SINCE)
+    if os.path.exists(path) and (offline or ttl is FOREVER or time.time() - os.path.getmtime(path) < ttl) \
+            and not (stale_search and not offline and os.environ.get("FIS_CACHE_ONLY") != "1"):
         return open(path, encoding="utf-8").read()
     if os.environ.get("FIS_CACHE_ONLY") == "1" and "tsetmc" not in url:  # recompute.py: never ask Codal
         raise RuntimeError(f"not in cache: {url}")

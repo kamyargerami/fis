@@ -10,6 +10,7 @@ Run it in the background: ~1 min per symbol because of Codal throttling.
 import json
 import os
 import sys
+import time
 import traceback
 import urllib.error
 
@@ -50,6 +51,7 @@ try:
 except (FileNotFoundError, ValueError):
     stops = {}
 todo = [s for s in SYMBOLS if needs_collect(os.path.join(OUT, f"{s}.json"))]
+fetch.FRESH_SEARCH_SINCE = time.time()  # letter lists cached before this run may miss the new letter
 print(f"{len(todo)} of {len(SYMBOLS)} symbols to collect", flush=True)
 pos = {s: i for i, s in enumerate(SYMBOLS, 1)}
 for done, s in enumerate(todo, 1):
