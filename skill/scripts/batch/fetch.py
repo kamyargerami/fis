@@ -88,7 +88,9 @@ def get(url, delay=1.5, ttl="auto", attempts=4):
             return body
         except Exception as e:  # noqa: BLE001
             last = e
-            if os.path.exists(path):  # stale-if-error
+            # stale-if-error, except a letter list this run must refresh: the old one may miss the new
+            # letter, so the symbol fails (and is collected again next run) instead of using old data
+            if os.path.exists(path) and not stale_search:
                 return open(path, encoding="utf-8").read()
             if attempt + 1 == attempts:
                 break
