@@ -65,18 +65,23 @@ def relevant(letter, lt):
     return True
 
 
+LAST_SEARCH_AT = None  # time of the search search() returned (a reused one is older)
+
+
 def search(from_jalali):
     """All letters of the watched types published since from_jalali (inclusive).
 
     The whole result is cached for WATCH_SEARCH_TTL, so a run that resumes after a stop does not
     page through Codal again. (Caching pages one by one could miss letters: new ones shift the pages.)
     """
+    global LAST_SEARCH_AT
     try:
         c = json.loads(SEARCH_CACHE.read_text(encoding="utf-8"))
         age = time.time() - c["at"]
         if c["from"] <= from_jalali and age < config.WATCH_SEARCH_TTL:
             log.info("codal: reusing the search from %d min ago (%d letters since %s)",
                      age // 60, len(c["letters"]), c["from"])
+            LAST_SEARCH_AT = c["at"]
             return c["letters"]
     except (FileNotFoundError, ValueError, KeyError):
         pass
@@ -98,6 +103,7 @@ def search(from_jalali):
     tmp.write_text(json.dumps({"from": from_jalali, "at": time.time(), "letters": out}, ensure_ascii=False),
                    encoding="utf-8")
     os.replace(tmp, SEARCH_CACHE)
+    LAST_SEARCH_AT = time.time()
     return out
 
 
@@ -118,7 +124,8 @@ def find_new(state):
     listed = listed_stocks()
     log.info("codal: watching %d symbols, %d listed stocks; searching since %s", len(watched), len(listed), fd)
     letters = search(fd)
-    state["last_search"] = datetime.date.today().isoformat()
+    # the day the search was made, not today: a reused search does not have letters published since
+    state["last_search"] = datetime.date.fromtimestamp(LAST_SEARCH_AT).isoformat()
     log.info("codal: %d letters since %s", len(letters), fd)
     new, by_title = [], {}
     for x in letters:

@@ -26,6 +26,7 @@ import json
 import os
 import statistics
 import sys
+import time
 import traceback
 import urllib.error
 
@@ -359,6 +360,7 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     nested = "--nested" in sys.argv  # also evaluate investees that are holdings themselves (slow: hours)
     work = os.path.abspath(args[0]) if args else os.getcwd()
+    fetch.FRESH_SEARCH_SINCE = time.time()  # stale investees: an older letter list may miss the new letter
     res_dir = os.path.join(work, "results")
     hs = []
     for f in sorted(os.listdir(res_dir)):
